@@ -1,0 +1,7 @@
+# 材质单任务的「无颜色」对照数据集：与 UrmatSeg16k.yaml 唯一差别是 IN_CHANNELS 6→3。
+# 与 cfgs/seg_urmat_16k.yaml（in_channels=6，单任务材质 mIoU 0.9406）构成严格配对。
+NAME: UrmatSegDataset
+DATA_PATH: /mnt/data/datasets/UR-MAT/seg_16k
+N_POINTS: 16384
+NUM_CATEGORY: 14
+IN_CHANNELS: 3

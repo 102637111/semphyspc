@@ -1,0 +1,22 @@
+# 合并相似类：nuScenes-lidarseg 32 类 → 12 类（物理交互粗粒度）。
+# 合并依据：几何不可分 + 物理碰撞属性相同。12 类 = noise/animal/person/car/bus/truck/
+#   two_wheeler/ground/manmade/vegetation/frangible/ego。
+#
+# CLASS_MAP[旧 id] = 新 id，旧 id 顺序与 lidarseg 32 类一致：
+#   0 noise→0；1 animal→1；
+#   2 adult /3 child /4 construction_worker /5 personal_mobility /6 police_officer
+#   /7 stroller /8 wheelchair → 2 person；
+#   9 barrier /10 debris /11 pushable_pullable /12 trafficcone → 10 frangible；
+#   13 bicycle_rack /28 manmade /29 static.other → 8 manmade；
+#   14 bicycle /21 motorcycle → 6 two_wheeler；
+#   15 bus.bendy /16 bus.rigid → 4 bus；
+#   17 car /19 ambulance /20 police → 3 car；
+#   18 construction /22 trailer /23 truck → 5 truck；
+#   24 driveable /25 flat.other /26 sidewalk /27 terrain → 7 ground；
+#   30 vegetation → 9 vegetation；31 ego → 11 ego。
+NAME: NuscenesSegDataset
+DATA_PATH: data/nuscenes_seg_full_16k
+N_POINTS: 16384
+NUM_CATEGORY: 12
+IN_CHANNELS: 6
+CLASS_MAP: [0, 1, 2, 2, 2, 2, 2, 2, 2, 10, 10, 10, 10, 8, 6, 4, 4, 3, 5, 3, 3, 6, 5, 5, 7, 7, 7, 7, 8, 8, 9, 11]

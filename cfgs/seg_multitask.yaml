@@ -1,0 +1,32 @@
+# 多任务分割：共享 PointMamba 编码器 + 语义头(nuScenes 32类) + 材质头(UR-MAT 14类)
+optimizer: {
+  type: AdamW,
+  kwargs: { lr: 0.0005, weight_decay: 0.05 }
+}
+scheduler: {
+  type: CosLR,
+  kwargs: { epochs: 200, initial_epochs: 5 }
+}
+dataset: {
+  sem_train: { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'train' } },
+  sem_val:   { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } },
+  mat_train: { _base_: cfgs/dataset_configs/UrmatSeg16k.yaml, others: { subset: 'train' } },
+  mat_val:   { _base_: cfgs/dataset_configs/UrmatSeg16k.yaml, others: { subset: 'val' } },
+}
+model: {
+  NAME: PointMambaSeg, trans_dim: 384, depth: 12,
+  group_size: 32, num_group: 64, encoder_dims: 384,
+  in_channels: 6, num_classes: 32, num_materials: 14, upsample_k: 3,
+  rms_norm: False, drop_path: 0.1, drop_out: 0.0,
+  # 级联：材质头额外拼接 detach 的语义概率(先语义→再材质)，False 为并行基线
+  cascade_material: True,
+}
+npoints: 16384
+total_bs: 16
+step_per_update: 1
+max_epoch: 200
+grad_norm_clip: 10
+# 损失加权旋钮：聚类调度下材质只在前 2*n_mat 步更新，之后纯语义会覆盖材质。
+# 适度提高 mat_w 让材质特征更强、抗覆盖（交错调度已证伪：会压制语义主任务）。
+sem_loss_weight: 1.0
+mat_loss_weight: 2.0

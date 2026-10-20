@@ -1,0 +1,4 @@
+NAME: RealColorDataset
+DATA_PATH: data/nuscenes_dataset
+N_POINTS: 1024
+# NUM_CATEGORY: auto-detected from data

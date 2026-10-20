@@ -1,0 +1,5 @@
+NAME: NuscenesSegDataset
+DATA_PATH: data/nuscenes_seg_full_16k
+N_POINTS: 16384
+NUM_CATEGORY: 32
+IN_CHANNELS: 3

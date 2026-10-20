@@ -1,0 +1,5 @@
+NAME: UrmatSegDataset
+DATA_PATH: /mnt/data/datasets/UR-MAT/seg_16k
+N_POINTS: 16384
+NUM_CATEGORY: 14
+IN_CHANNELS: 6
