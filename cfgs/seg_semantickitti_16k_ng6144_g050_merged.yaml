@@ -1,0 +1,34 @@
+# SemanticKITTI 12 类预训练（跨域迁移第 1 阶段）。
+# 目的：在第二个真实驾驶数据集上预训练 backbone，学跨域通用几何/外观表示，
+#       之后用其 ckpt 初始化 nuScenes merged 训练（微调），验证迁移增益 + 泛化。
+#
+# 与 seg_16k_ng6144_g050_merged.yaml 唯一区别：dataset 换成 SemanticKittiSeg16kMerged
+# （num_classes 同为 12，故 ckpt 可整体加载到 nuScenes 12 类模型，无缝微调）。
+# 其余（16k / grid 0.5 / num_group 6144 / bs2 / step_per_update 4 / 40 epoch）一致。
+#
+# 前置：先跑 scripts/build_semantickitti_dataset.py 生成 data/semantickitti_seg_16k。
+optimizer: {
+  type: AdamW,
+  kwargs: { lr: 0.001, weight_decay: 0.05 }
+}
+scheduler: {
+  type: CosLR,
+  kwargs: { epochs: 40, initial_epochs: 5 }
+}
+dataset: {
+  train: { _base_: cfgs/dataset_configs/SemanticKittiSeg16kMerged.yaml, others: { subset: 'train' } },
+  val:   { _base_: cfgs/dataset_configs/SemanticKittiSeg16kMerged.yaml, others: { subset: 'val' } },
+  test:  { _base_: cfgs/dataset_configs/SemanticKittiSeg16kMerged.yaml, others: { subset: 'val' } }
+}
+model: {
+  NAME: PointMambaSeg, trans_dim: 384, depth: 12,
+  group_size: 32, num_group: 6144, encoder_dims: 384,
+  in_channels: 6, num_classes: 12, upsample_k: 3,
+  use_grid_group: True, grid_size: 0.5,
+  rms_norm: False, drop_path: 0.1, drop_out: 0.0,
+}
+npoints: 16384
+total_bs: 2
+step_per_update: 4
+max_epoch: 40
+grad_norm_clip: 10

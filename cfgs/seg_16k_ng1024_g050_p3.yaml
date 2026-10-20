@@ -1,0 +1,35 @@
+# P3：方案B 的架构（16k 点 / num_group=1024 / GridGroup 0.5m）+ 类别平衡损失 + 罕见帧过采样。
+# 生成脚本 scripts/make_p3_config.py。与 seg_16k_ng1024_g050.yaml 只差监督信号那两处。
+# 原注释：GridSampling + voxel-patch 分组（O(N)），突破 FPS+KNN 的 O(B*G*N) 距离矩阵瓶颈。
+# 与 seg_nuscenes_full_16k_g256.yaml 的唯一区别：
+#   - use_grid_group=True（GridGroup 替换 Group）
+#   - num_group 256 -> 1024（token 数再扩 4 倍；grid 分组无 KNN 距离矩阵，可承受）
+#   - 配套 O(N) inverse-gather 上采样（grid_upsample）
+# 注：npoints 仍为 16384（当前数据集为 16k 子采样）；规模化到单帧几万点需重跑
+#     build_nuscenes_seg_dataset.py --num_points 65536。
+optimizer: {
+  type: AdamW,
+  kwargs: { lr: 0.001, weight_decay: 0.05 }
+}
+scheduler: {
+  type: CosLR,
+  kwargs: { epochs: 40, initial_epochs: 5 }
+}
+dataset: {
+  train: { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'train', RARE_AWARE_SAMPLING: True, RARE_MAX_REP: 25, RARE_EXPONENT: 0.5 } },
+  val:   { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } },
+  test:  { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } }
+}
+model: {
+  NAME: PointMambaSeg, trans_dim: 384, depth: 12,
+  group_size: 32, num_group: 1024, encoder_dims: 384,
+  in_channels: 6, num_classes: 32, upsample_k: 3,
+  use_grid_group: True, grid_size: 0.5,
+  rms_norm: False, drop_path: 0.1, drop_out: 0.0,
+  sem_class_weight: [0.3145, 10, 0.5891, 8.461, 2.492, 9.22, 10, 9.151, 6.819, 0.3386, 4.91, 1.315, 1.118, 2.141, 2.258, 1.389, 0.4646, 0.25, 0.7511, 1, 3.561, 1.542, 0.3844, 0.25, 0.25, 0.3269, 0.25, 0.25, 0.25, 1, 0.25, 0.2563],
+}
+npoints: 16384
+total_bs: 8
+step_per_update: 1
+max_epoch: 40
+grad_norm_clip: 10

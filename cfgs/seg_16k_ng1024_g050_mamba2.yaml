@@ -1,0 +1,31 @@
+# Mamba2 切换消融：与 seg_16k_ng1024_g050.yaml（基线 mIoU 0.3923）唯一区别 =
+#   model 段新增 mamba_version: 2（MixerModel 用 Mamba2 替换 Mamba1）。
+# 其余（16k 点 / ng1024 / grid 0.5 / 40 epoch / bs8 / lr0.001 / in_channels=6）完全一致，
+# 以隔离「Mamba1 → Mamba2」单变量效应。
+# 注：Mamba2 默认 d_state=128（Mamba1 为 16），参数量微增，论文中需如实说明。
+optimizer: {
+  type: AdamW,
+  kwargs: { lr: 0.001, weight_decay: 0.05 }
+}
+scheduler: {
+  type: CosLR,
+  kwargs: { epochs: 40, initial_epochs: 5 }
+}
+dataset: {
+  train: { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'train' } },
+  val:   { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } },
+  test:  { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } }
+}
+model: {
+  NAME: PointMambaSeg, trans_dim: 384, depth: 12,
+  group_size: 32, num_group: 1024, encoder_dims: 384,
+  in_channels: 6, num_classes: 32, upsample_k: 3,
+  use_grid_group: True, grid_size: 0.5,
+  rms_norm: False, drop_path: 0.1, drop_out: 0.0,
+  mamba_version: 2,
+}
+npoints: 16384
+total_bs: 8
+step_per_update: 1
+max_epoch: 40
+grad_norm_clip: 10

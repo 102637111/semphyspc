@@ -1,0 +1,10 @@
+from .build import build_dataset_from_cfg
+import datasets.ShapeNet55Dataset
+import datasets.ModelNetDataset
+import datasets.ModelNetDatasetFewShot
+import datasets.ScanObjectNNDataset
+import datasets.ModelNet40RGBDataset
+import datasets.RealColorDataset
+import datasets.NuscenesSegDataset
+import datasets.UrmatSegDataset
+import datasets.NuscenesStreetAugDataset

@@ -1,0 +1,11 @@
+# SemanticKITTI -> 12 类逐点分割（跨域预训练/混合训练用）。
+# sem 在 build_semantickitti_dataset.py 里已映射到 12 类 COARSE（0-11，-1=忽略），
+# 故无需 CLASS_MAP（与 nuScenes 的 NuscenesSegFull16kMerged.yaml 不同，后者在加载时映射）。
+#
+# 复用 NuscenesSegDataset 读取（npz 无 inst 不影响，__getitem__ 只读 xyz/rgb/sem）。
+# DATA_PATH 指向 build_semantickitti_dataset.py 的 --dst 输出目录（含 train/ val/ 子目录）。
+NAME: NuscenesSegDataset
+DATA_PATH: data/semantickitti_seg_16k
+N_POINTS: 16384
+NUM_CATEGORY: 12
+IN_CHANNELS: 6

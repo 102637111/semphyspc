@@ -1,0 +1,32 @@
+# 方案B：GridSampling + voxel-patch 分组（O(N)），突破 FPS+KNN 的 O(B*G*N) 距离矩阵瓶颈。
+# 与 seg_nuscenes_full_16k_g256.yaml 的唯一区别：
+#   - use_grid_group=True（GridGroup 替换 Group）
+#   - num_group 256 -> 1024（token 数再扩 4 倍；grid 分组无 KNN 距离矩阵，可承受）
+#   - 配套 O(N) inverse-gather 上采样（grid_upsample）
+# 注：npoints 仍为 16384（当前数据集为 16k 子采样）；规模化到单帧几万点需重跑
+#     build_nuscenes_seg_dataset.py --num_points 65536。
+optimizer: {
+  type: AdamW,
+  kwargs: { lr: 0.001, weight_decay: 0.05 }
+}
+scheduler: {
+  type: CosLR,
+  kwargs: { epochs: 40, initial_epochs: 5 }
+}
+dataset: {
+  train: { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'train' } },
+  val:   { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } },
+  test:  { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } }
+}
+model: {
+  NAME: PointMambaSeg, trans_dim: 384, depth: 12,
+  group_size: 32, num_group: 1024, encoder_dims: 384,
+  in_channels: 6, num_classes: 32, upsample_k: 3,
+  use_grid_group: True, grid_size: 0.5,
+  rms_norm: False, drop_path: 0.1, drop_out: 0.0,
+}
+npoints: 16384
+total_bs: 16
+step_per_update: 1
+max_epoch: 40
+grad_norm_clip: 10

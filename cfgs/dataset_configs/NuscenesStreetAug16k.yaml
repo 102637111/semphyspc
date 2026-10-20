@@ -1,0 +1,7 @@
+NAME: NuscenesStreetAugDataset
+DATA_PATH: data/nuscenes_seg_full_16k
+STREET_PATH: /mnt/data/datasets/UR-MAT/street_pc_pseudolabel_static
+STREET_RATIO: 0.1
+N_POINTS: 16384
+NUM_CATEGORY: 32
+IN_CHANNELS: 6

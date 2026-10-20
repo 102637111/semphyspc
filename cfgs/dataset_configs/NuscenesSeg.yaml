@@ -1,0 +1,5 @@
+NAME: NuscenesSegDataset
+DATA_PATH: data/nuscenes_seg_mini
+N_POINTS: 4096
+NUM_CATEGORY: 32
+IN_CHANNELS: 6

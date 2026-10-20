@@ -1,0 +1,27 @@
+# 方案A：验证 token 数量 = 瓶颈（num_group 64 -> 256）
+# 其余与 seg_nuscenes_full_16k.yaml 完全一致，仅把 token 数扩 4 倍。
+# 注意：KNN 为纯 PyTorch topk，距离矩阵 O(G x N)，G=256 -> 268MB，可承受；再往上(512/1024)需分块或换 GridSampling。
+optimizer: {
+  type: AdamW,
+  kwargs: { lr: 0.001, weight_decay: 0.05 }
+}
+scheduler: {
+  type: CosLR,
+  kwargs: { epochs: 200, initial_epochs: 5 }
+}
+dataset: {
+  train: { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'train' } },
+  val:   { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } },
+  test:  { _base_: cfgs/dataset_configs/NuscenesSegFull16k.yaml, others: { subset: 'val' } }
+}
+model: {
+  NAME: PointMambaSeg, trans_dim: 384, depth: 12,
+  group_size: 32, num_group: 256, encoder_dims: 384,
+  in_channels: 6, num_classes: 32, upsample_k: 3,
+  rms_norm: False, drop_path: 0.1, drop_out: 0.0,
+}
+npoints: 16384
+total_bs: 16
+step_per_update: 1
+max_epoch: 200
+grad_norm_clip: 10
