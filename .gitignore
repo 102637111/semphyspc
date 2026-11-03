@@ -1,0 +1,69 @@
+# ===== datasets & raw data (large / licensed / regenerable) =====
+data/
+my_raw_dataset/
+my_raw_dataset_clean/
+
+# ===== model checkpoints & weights =====
+*.pth
+*.pt
+*.safetensors
+*.ckpt
+*.onnx
+*.engine
+*.trt
+
+# ===== large binary / point-cloud / archive outputs =====
+*.npz
+*.npy
+*.ply
+*.pcd
+*.las
+*.laz
+*.bag
+*.db
+*.db3
+*.tgz
+*.zip
+*.tar
+*.tar.gz
+*.dat
+*.bin
+
+# ===== experiment runs & derived outputs =====
+experiments/
+out_tracking/
+results/
+eval_result/
+eval_results/
+visualizations/
+figure/
+runs/
+logs/
+*.log
+
+# ===== manuscript & submission materials (keep private pre-acceptance) =====
+paper/
+docs/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# ===== IDE / editor / OS =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== environment & secrets =====
+.env
+*.env

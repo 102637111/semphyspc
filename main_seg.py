@@ -116,6 +116,8 @@ def main():
         runner_seg.test_net(args, config)
     elif config.dataset.get('sem_train') is not None:
         runner_seg.run_net_multitask(args, config, train_writer, val_writer)
+    elif getattr(config, 'stage1_multitask', False):
+        runner_seg.run_net_s1(args, config, train_writer, val_writer)
     else:
         runner_seg.run_net(args, config, train_writer, val_writer)
 

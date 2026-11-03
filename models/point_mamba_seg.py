@@ -100,13 +100,42 @@ class PointMambaSeg(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+        # 局部几何旁路（可选，阶段一）：edge-conv 式半径邻域特征。
+        # 相对坐标 + 邻域距离 -> 小 MLP -> max-pool，输出逐点几何描述，
+        # 与全局 token 上采样特征拼接后进各头，保小物体/罕见类的局部结构。
+        self.use_local_geom = getattr(config, 'use_local_geom', False)
+        self.geom_dim = getattr(config, 'geom_dim', 128)
+        head_in = self.trans_dim + 128
+        if self.use_local_geom:
+            from .local_geom import LocalGeomBranch
+            self.local_geom_branch = LocalGeomBranch(
+                radius=getattr(config, 'geom_radius', 0.5),
+                nsample=getattr(config, 'geom_nsample', 32),
+                out_dim=self.geom_dim)
+            head_in += self.geom_dim
+
+        # 射线几何旁路（可选，阶段一）：第 7 通道「盲区邻接」-> 小 MLP -> 逐点描述，
+        # 与全局 token + point_branch 拼接。主干 in_channels 仍 6（XYZ+RGB），
+        # 第 7 通道在 forward 单独剥出，不进 Encoder（Encoder 只支持 3/6 通道双流）。
+        self.use_ray_feature = getattr(config, 'use_ray_feature', False)
+        self.ray_dim = getattr(config, 'ray_dim', 128)
+        if self.use_ray_feature:
+            self.ray_branch = nn.Sequential(
+                nn.Conv1d(1, 64, 1),
+                nn.BatchNorm1d(64),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(64, self.ray_dim, 1),
+            )
+            head_in += self.ray_dim
+        self.head_in = head_in
+
         # KNN for group-token -> point upsampling
         self.upsample_k = getattr(config, 'upsample_k', 3)
         self.knn_upsample = KNN(k=self.upsample_k, transpose_mode=True)
 
-        # per-point semantic head: [trans_dim + 128] -> num_classes
+        # per-point semantic head: [head_in] -> num_classes
         self.seg_head = nn.Sequential(
-            nn.Conv1d(self.trans_dim + 128, 256, 1),
+            nn.Conv1d(head_in, 256, 1),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
@@ -123,7 +152,7 @@ class PointMambaSeg(nn.Module):
         self.num_materials = getattr(config, 'num_materials', 0)
         self.cascade_material = getattr(config, 'cascade_material', False)
         if self.num_materials > 0:
-            mat_in = self.trans_dim + 128
+            mat_in = head_in
             if self.cascade_material:
                 mat_in += self.num_classes
             self.material_head = nn.Sequential(
@@ -137,14 +166,25 @@ class PointMambaSeg(nn.Module):
                 nn.Conv1d(256, self.num_materials, 1),
             )
 
-        # instance head (optional): per-point embedding for grouping
+        # instance head (optional): per-point offset regression (offset = 质心 - 点),
+        # 复用 train_instance_offset.py 的 offset + DBSCAN 实例路线。
         self.num_instances = getattr(config, 'num_instances', 0)
         if self.num_instances > 0:
             self.instance_head = nn.Sequential(
-                nn.Conv1d(self.trans_dim + 128, 256, 1),
+                nn.Conv1d(head_in, 256, 1),
                 nn.BatchNorm1d(256),
                 nn.ReLU(inplace=True),
                 nn.Conv1d(256, self.num_instances, 1),
+            )
+
+        # boundary head (optional): 1 通道实例/语义边界 logit（阶段一多任务）。
+        self.num_boundary = getattr(config, 'num_boundary', 0)
+        if self.num_boundary > 0:
+            self.boundary_head = nn.Sequential(
+                nn.Conv1d(head_in, 256, 1),
+                nn.BatchNorm1d(256),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(256, 1, 1),
             )
 
         self.build_loss_func()
@@ -213,6 +253,12 @@ class PointMambaSeg(nn.Module):
     def forward(self, pts):
         B, N, C = pts.shape
 
+        # 射线几何旁路：第 7 通道「盲区邻接」单独剥出走专用 MLP；主干只用前 6 通道。
+        ray_feat = None
+        if self.use_ray_feature:
+            ray_feat = self.ray_branch(pts[:, :, 6:7].transpose(1, 2))  # (B,ray_dim,N)
+            pts = pts[:, :, :6]
+
         # ---- group + encode ----
         if self.use_grid_group:
             neighborhood, center, inverse = self.group_divider(pts)  # (B,G,M,C),(B,G,3),(B,N)
@@ -250,6 +296,11 @@ class PointMambaSeg(nn.Module):
         # ---- skip connection: per-point low-level feature ----
         point_feat = self.point_branch(pts.transpose(1, 2))  # (B,128,N)
         feat = torch.cat([up.transpose(1, 2), point_feat], dim=1)  # (B,trans_dim+128,N)
+        if self.use_local_geom:
+            geom_feat = self.local_geom_branch(pts[:, :, :3])  # (B,geom_dim,N)
+            feat = torch.cat([feat, geom_feat], dim=1)
+        if self.use_ray_feature:
+            feat = torch.cat([feat, ray_feat], dim=1)  # (B,head_in,N)
 
         # ---- heads ----
         logits = self.seg_head(feat).transpose(1, 2)  # (B,N,num_classes)
@@ -260,15 +311,27 @@ class PointMambaSeg(nn.Module):
                 # 级联：把语义概率(softmax, detach)拼到材质头输入，提供"这是什么物体"的先验。
                 # detach 防止材质损失回传污染语义头（语义只由 nuScenes 训练）。
                 sem_prob = torch.softmax(logits, dim=-1).detach().transpose(1, 2)  # (B,num_classes,N)
-                mat_feat = torch.cat([feat, sem_prob], dim=1)  # (B, trans_dim+128+num_classes, N)
+                mat_feat = torch.cat([feat, sem_prob], dim=1)  # (B, head_in+num_classes, N)
             else:
                 mat_feat = feat
             mat_logits = self.material_head(mat_feat).transpose(1, 2)  # (B,N,num_materials)
 
+        inst = None
         if self.num_instances > 0:
             inst = self.instance_head(feat).transpose(1, 2)  # (B,N,num_instances)
-            return logits, mat_logits, inst
+        boundary = None
+        if self.num_boundary > 0:
+            boundary = self.boundary_head(feat).transpose(1, 2)  # (B,N,1)
 
+        # 返回顺序固定为 (logits, mat_logits, [inst], [boundary])，未启用的头不追加。
+        # 保持旧调用 (logits, mat_logits) 兼容：仅当启用额外头时才扩展返回元组。
+        if inst is not None or boundary is not None:
+            outs = [logits, mat_logits]
+            if inst is not None:
+                outs.append(inst)
+            if boundary is not None:
+                outs.append(boundary)
+            return tuple(outs)
         return logits, mat_logits
 
     def get_loss(self, ret, gt):
@@ -297,6 +360,35 @@ class PointMambaSeg(nn.Module):
             crit = self.loss_ce_sem
         loss = crit(ret[valid], gt[valid])
         return loss
+
+    def get_offset_loss(self, offset_pred, inst, offset_gt):
+        """Smooth L1 回归：thing 点(inst>0)的 offset 预测 vs 真值质心偏移。
+
+        offset = 实例质心 - 点坐标，只监督 thing 点（背景 inst<=0 不参与），
+        与 train_instance_offset.py 的损失范式一致。
+        """
+        mask = inst > 0
+        if mask.sum() == 0:
+            return torch.tensor(0.0, device=offset_pred.device, requires_grad=True)
+        return F.smooth_l1_loss(offset_pred[mask], offset_gt[mask])
+
+    def get_boundary_loss(self, boundary_pred, boundary_gt):
+        """BCE 边界损失，带正负样本加权（边界点稀少，默认给正样本更高权重）。
+
+        Args:
+            boundary_pred: (B, N, 1) logits
+            boundary_gt:   (B, N) 0/1，-1 为 ignore（padding）
+        """
+        valid = boundary_gt >= 0
+        if valid.sum() == 0:
+            return torch.tensor(0.0, device=boundary_pred.device, requires_grad=True)
+        logits = boundary_pred.reshape(-1)            # (B*N,)
+        targets = boundary_gt.reshape(-1).float()     # (B*N,)
+        valid = valid.reshape(-1)                     # (B*N,)
+        pos_weight = float(getattr(self.config, 'boundary_pos_weight', 1.0))
+        return F.binary_cross_entropy_with_logits(
+            logits[valid], targets[valid],
+            pos_weight=torch.tensor(pos_weight, device=logits.device))
 
     def load_model_from_ckpt(self, ckpt_path):
         """从训练 checkpoint 载入权重（用于微调/续训初始化）。"""

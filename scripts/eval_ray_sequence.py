@@ -144,6 +144,43 @@ class MambaRay(nn.Module):
         return flag, rng
 
 
+class BiMambaRay(nn.Module):
+    """双向 Mamba：正序 + 反序两条 SSM，各自独立参数，输出相加（B 消融）。"""
+
+    def __init__(self, d_model=128, n_layers=2, d_state=16):
+        super().__init__()
+        from mamba_ssm import Mamba
+        self.d_model = d_model
+        self.embed = nn.Linear(3, d_model)
+        self.ring_emb = nn.Embedding(N_RINGS, d_model)
+        self.fwd_layers = nn.ModuleList(
+            [Mamba(d_model=d_model, d_state=d_state, d_conv=4, expand=2)
+             for _ in range(n_layers)])
+        self.bwd_layers = nn.ModuleList(
+            [Mamba(d_model=d_model, d_state=d_state, d_conv=4, expand=2)
+             for _ in range(n_layers)])
+        self.norm = nn.LayerNorm(d_model)
+        self.flag_head = nn.Linear(d_model, 1)
+        self.range_head = nn.Linear(d_model, 1)
+
+    def forward(self, x):
+        B = x.shape[0]
+        seq = x.reshape(B, 3, -1).transpose(1, 2)          # (B, L, 3) ring-major
+        rid = torch.arange(N_RINGS, device=x.device).repeat_interleave(W_AZIM)[None].expand(B, -1)
+        h = self.embed(seq) + self.ring_emb(rid)            # (B, L, d_model)
+        hf = h
+        for layer in self.fwd_layers:
+            hf = layer(hf)
+        hb = torch.flip(h, dims=[1])
+        for layer in self.bwd_layers:
+            hb = layer(hb)
+        hb = torch.flip(hb, dims=[1])
+        h = self.norm(hf + hb)
+        flag = self.flag_head(h).reshape(B, N_RINGS, W_AZIM)
+        rng = torch.sigmoid(self.range_head(h)).reshape(B, N_RINGS, W_AZIM)
+        return flag, rng
+
+
 def run_epoch(model, loader, opt, device, train=True):
     model.train(train)
     tot = tot_flag = tot_rng = 0.0
@@ -261,7 +298,8 @@ def main():
                     batch_size=args.bs, shuffle=False, num_workers=0)
 
     summary = {'args': vars(args)}
-    for name, model in [('MLPRay', MLPRay()), ('MambaRay', MambaRay(args.d_model, args.n_layers))]:
+    for name, model in [('MLPRay', MLPRay()), ('MambaRay', MambaRay(args.d_model, args.n_layers)),
+                        ('BiMambaRay', BiMambaRay(args.d_model, args.n_layers))]:
         model = model.to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
         print(f'\n===== 训练 {name} =====')

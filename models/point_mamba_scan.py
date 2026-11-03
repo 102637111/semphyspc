@@ -14,7 +14,6 @@ from utils.logger import *
 from timm.models.layers import trunc_normal_
 from timm.models.layers import DropPath
 
-from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
 from mamba_ssm.modules.mamba_simple import Mamba
 from mamba_ssm.modules.mamba2 import Mamba2
 from .block_scan import Block
@@ -772,6 +771,9 @@ class Point_MAE_Mamba_serializationV2(nn.Module):
         self.build_loss_func(self.loss)
 
     def build_loss_func(self, loss_type):
+        # 延迟导入：extensions.chamfer_dist 仅 MAE/重建头需要，语义分割路径不触发，
+        # 未编译该扩展的机器（如 c135）仍可 import point_mamba_scan 的 Encoder/Group 等。
+        from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
         if loss_type == "cdl1":
             self.loss_func = ChamferDistanceL1().cuda()
         elif loss_type == 'cdl2':

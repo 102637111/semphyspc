@@ -137,6 +137,31 @@ def main():
     print_log(f'OA  (整体准确率)     = {oa:.4f}', logger=logger)
     print_log('=' * 70, logger=logger)
 
+    # ---- head / mid / tail 三段 mIoU ----
+    # 按每类 GT 点数降序把类别三等分：head=最频繁 1/3、tail=最稀疏 1/3、mid=其余。
+    # 罕见类失效是否改善，主要看 tail（长尾类）mIoU 有没有被局部几何旁路/多任务拉起来。
+    gt_pts = conf.sum(dim=1).cpu().numpy()
+    order = np.argsort(-gt_pts)
+    third = num_classes // 3
+    buckets = {
+        'head': order[:third],
+        'mid': order[third:num_classes - third],
+        'tail': order[num_classes - third:],
+    }
+    hmt = {}
+    print_log('\n' + '=' * 70, logger=logger)
+    print_log('head / mid / tail 三段 mIoU（按 GT 点数降序三等分）', logger=logger)
+    print_log('=' * 70, logger=logger)
+    for name in ['head', 'mid', 'tail']:
+        idxs = buckets[name]
+        vals = [ious[c] for c in idxs if not np.isnan(ious[c])]
+        n_gt = int((gt_pts[idxs] > 0).sum())
+        bm = float(np.mean(vals)) if vals else 0.0
+        hmt[name] = {'miou': bm, 'classes': [CLASS_NAMES[int(c)] for c in idxs], 'gt_classes': n_gt}
+        names_str = ', '.join(f'{CLASS_NAMES[int(c)]}({int(gt_pts[c]):,})' for c in idxs)
+        print_log(f'  {name:<4} mIoU = {bm:.4f}  (有 GT 类 {n_gt}/{len(idxs)}): {names_str}', logger=logger)
+    print_log('=' * 70, logger=logger)
+
     if args.dump_confusion:
         print_log('\n' + '=' * 70, logger=logger)
         print_log(f'罕见类 GT → 预测 分布（top-{args.confusion_topk}，val 集）', logger=logger)
@@ -234,6 +259,7 @@ def main():
             'per_class_iou': {CLASS_NAMES[c]: (None if np.isnan(ious[c]) else float(ious[c]))
                               for c in range(num_classes)},
             'gt_points_per_class': {CLASS_NAMES[c]: gt_per_class[c] for c in range(num_classes)},
+            'head_mid_tail': hmt,
         }
         os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
         with open(args.out_json, 'w') as f:

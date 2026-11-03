@@ -1,6 +1,6 @@
 # SemPhysPC — 语义物理点云框架
 
-> **论文**：*Semantic Point Cloud Segmentation for Physical Interaction and Navigation Safety*（IEEE Sensors Journal）
+> **论文**：*Semantic Point Cloud Segmentation for Physical Interaction and Navigation Safety*（Robotics and Autonomous Systems, Elsevier）
 
 本仓库基于 [PointMamba](https://github.com/LMD0311/PointMamba)（NeurIPS 2024）代码修改而来的变体，面向**物理交互与导航安全**场景的语义点云理解。
 

@@ -44,6 +44,18 @@ class NuscenesSegDataset(Dataset):
 
         self.num_category = getattr(config, 'NUM_CATEGORY', 32)
 
+        # 阶段一多任务开关：NEED_INST 返回 inst + offset GT；NEED_BOUNDARY 返回 is_boundary。
+        self.need_inst = bool(getattr(config, 'NEED_INST', False))
+        self.need_boundary = bool(getattr(config, 'NEED_BOUNDARY', False))
+
+        # 阶段一射线几何分支：RAY_FEATURE 追加 1 通道「盲区邻接」特征（scripts/build_ray_feature.py
+        # 离线生成的 {token}_ray.npz）；NO_ROT_AUG 关闭绕 Z 旋转增强。射线特征按原始朝向算，
+        # 随机 yaw 会使其与旋转后几何失配，故两者配对使用。
+        self.use_ray_feature = bool(getattr(config, 'RAY_FEATURE', False))
+        self.no_rot_aug = bool(getattr(config, 'NO_ROT_AUG', False))
+        # sidecar 独立目录（避免污染数据目录的 *.npz glob）
+        self.ray_dir = Path(data_dir) / 'ray_feat' / self.subset
+
         # 合并相似类：config.CLASS_MAP 给 32 类各一个「新类 id」的映射表。
         # 缺省 None = 不合并（原始 32 类）。映射表长度须等于 32（lidarseg 全类别数）。
         self.class_map = getattr(config, 'CLASS_MAP', None)
@@ -144,31 +156,82 @@ class NuscenesSegDataset(Dataset):
         if self.class_map is not None:
             sem = self.class_map[sem]
 
+        inst = d['inst'].astype(np.int64) if self.need_inst else None
+        if self.need_boundary:
+            if 'is_boundary' not in d:
+                raise KeyError(f'{self.files[index]} 缺少 is_boundary 字段，'
+                               f'请先运行 scripts/build_boundary_label.py')
+            boundary = d['is_boundary'].astype(np.int64)
+
+        # 射线盲区邻接特征（可选 1 通道，与 xyz 同序；缺 sidecar 时退化为全 0）
+        ray_feat = None
+        if self.use_ray_feature:
+            ray_path = self.ray_dir / (self.files[index].stem + '.npz')
+            if ray_path.exists():
+                ray_feat = np.load(str(ray_path))['blind_adj'].astype(np.float32)
+            else:
+                ray_feat = np.zeros(xyz.shape[0], np.float32)
+
         N = xyz.shape[0]
         # 保证点数一致：不足则补零（用 -1 mask 忽略），超出则随机截取
         if N != self.npoints:
             if N > self.npoints:
                 idx = np.random.choice(N, self.npoints, replace=False)
                 xyz, rgb, sem = xyz[idx], rgb[idx], sem[idx]
+                if inst is not None:
+                    inst = inst[idx]
+                if self.need_boundary:
+                    boundary = boundary[idx]
+                if ray_feat is not None:
+                    ray_feat = ray_feat[idx]
             else:
                 pad = self.npoints - N
                 xyz = np.pad(xyz, ((0, pad), (0, 0)), mode='constant')
                 rgb = np.pad(rgb, ((0, pad), (0, 0)), mode='constant')
                 sem = np.pad(sem, (0, pad), mode='constant', constant_values=-1)
+                if inst is not None:
+                    inst = np.pad(inst, (0, pad), mode='constant', constant_values=-1)
+                if self.need_boundary:
+                    boundary = np.pad(boundary, (0, pad), mode='constant', constant_values=-1)
+                if ray_feat is not None:
+                    ray_feat = np.pad(ray_feat, (0, pad), mode='constant')
 
         # 训练增强：绕 Z 轴随机旋转（室外驾驶场景 yaw 任意）
-        if self.subset == 'train':
+        if self.subset == 'train' and not self.no_rot_aug:
             ang = np.random.uniform(0, 2 * np.pi)
             c, s = np.cos(ang), np.sin(ang)
             R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
             xyz = xyz @ R.T
+
+        # offset GT：thing 点(inst>0)指向实例质心的 3D 向量。
+        # 在旋转后的 xyz 上按 (sem,inst) 分组算质心，保证 GT 与增广后坐标对齐
+        # （offset = 质心 - xyz，旋转线性，等价于 R @ (原质心 - 原 xyz)，方向正确）。
+        offset = None
+        if inst is not None:
+            offset = np.zeros_like(xyz)
+            thing = inst > 0
+            for oid in np.unique(inst[thing]):
+                m = inst == oid
+                offset[m] = xyz[m].mean(0) - xyz[m]
 
         if self.in_channels == 6:
             pts = np.concatenate([xyz, rgb], axis=1).astype(np.float32)
         else:
             pts = xyz
 
+        # 射线盲区邻接通道（第 7 通道；此时 model.in_channels 须相应 +1）
+        if self.use_ray_feature:
+            pts = np.concatenate([pts, ray_feat[:, None]], axis=1).astype(np.float32)
+
         pts_tensor = torch.from_numpy(pts).float()
         sem_tensor = torch.from_numpy(sem).long()
 
-        return 'NuscenesSeg', self.files[index].stem, (pts_tensor, sem_tensor)
+        # 返回顺序固定：(pts, sem, [inst, offset], [boundary])，由 need_inst/need_boundary 决定。
+        outs = [pts_tensor, sem_tensor]
+        if inst is not None:
+            outs.append(torch.from_numpy(inst).long())
+            outs.append(torch.from_numpy(offset).float())
+        if self.need_boundary:
+            outs.append(torch.from_numpy(boundary).long())
+
+        return 'NuscenesSeg', self.files[index].stem, tuple(outs)

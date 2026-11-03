@@ -156,7 +156,15 @@ def validate(base_model, test_dataloader, num_classes, epoch, val_writer, args, 
             points = data[0].cuda()
             sem = data[1].cuda()
 
-            sem_logits, mat_logits = base_model(points)  # (B,N,C), (B,N,M)|None
+            ret = base_model(points)
+            # PointMambaSeg.forward 返回 (sem_logits, mat_logits, [inst], [boundary])，
+            # 只取语义/材质分支。DataParallel 会把元组按元素 gather。
+            if isinstance(ret, (tuple, list)):
+                sem_logits = ret[0]
+                mat_logits = ret[1] if len(ret) > 1 else None
+            else:
+                sem_logits = ret
+                mat_logits = None
             logits = sem_logits if task == 'sem' else mat_logits
             pred = logits.argmax(-1)     # (B, N)
 
@@ -356,3 +364,138 @@ def run_net_multitask(args, config, train_writer=None, val_writer=None):
 
     print_log('训练结束，best sem_mIoU = %.4f, best mat_mIoU = %.4f, best avg = %.4f' %
               (best_metrics.sem_miou, best_metrics.mat_miou, best_metrics.score), logger=logger)
+
+
+# --------------------------------------------------------------------------- #
+# 阶段一多任务：语义 CE + offset SmoothL1 + 边界 BCE（GridGroup 旁路 + 多任务头）
+# --------------------------------------------------------------------------- #
+def run_net_s1(args, config, train_writer=None, val_writer=None):
+    """阶段一多任务联合训练：语义 CE + offset SmoothL1 + 边界 BCE。
+
+    数据由 NuscenesSegDataset 按 config 开关额外返回（顺序固定）：
+        (pts, sem, [inst, offset], [boundary])
+    模型 forward 返回 (logits, mat_logits, [inst], [boundary])。
+    损失：loss = sem_w·CE(sem) + offset_w·SmoothL1(offset, thing点) + boundary_w·BCE(boundary)
+    语义 mIoU 仍是主指标（ckpt-best 选择依据），offset/boundary 为辅助任务。
+    """
+    logger = get_logger(args.log_name)
+    num_classes = config.model.num_classes
+    need_inst = getattr(config.model, 'num_instances', 0) > 0
+    need_boundary = getattr(config.model, 'num_boundary', 0) > 0
+
+    (train_sampler, train_dataloader), (_, val_dataloader) = \
+        builder.dataset_builder(args, config.dataset.train), \
+        builder.dataset_builder(args, config.dataset.val)
+
+    base_model = builder.model_builder(config.model)
+    start_epoch = 0
+    best_metrics = Seg_Metric(0.)
+
+    if args.resume:
+        start_epoch, bm = builder.resume_model(base_model, args, logger=logger)
+        if bm:
+            best_metrics = Seg_Metric(bm.get('miou', 0.), bm.get('oa', 0.))
+    else:
+        if args.ckpts is not None:
+            base_model.load_model_from_ckpt(args.ckpts)
+        else:
+            print_log('Training from scratch (stage-1 multitask)', logger=logger)
+
+    if args.use_gpu:
+        base_model.to(args.local_rank)
+    if args.distributed:
+        base_model = nn.parallel.DistributedDataParallel(base_model,
+                                                         device_ids=[args.local_rank % torch.cuda.device_count()])
+    else:
+        base_model = nn.DataParallel(base_model).cuda()
+
+    optimizer, scheduler = builder.build_opti_sche(base_model, config)
+    if args.resume:
+        builder.resume_optimizer(optimizer, args, logger=logger)
+    base_model.zero_grad()
+    misc.summary_parameters(base_model, logger=logger)
+
+    sem_w = float(getattr(config, 'sem_loss_weight', 1.0))
+    offset_w = float(getattr(config, 'offset_loss_weight', 0.0))
+    boundary_w = float(getattr(config, 'boundary_loss_weight', 0.0))
+    use_offset = need_inst and offset_w > 0
+    use_boundary = need_boundary and boundary_w > 0
+
+    for epoch in range(start_epoch, config.max_epoch + 1):
+        if args.distributed:
+            train_sampler.set_epoch(epoch)
+        base_model.train()
+
+        epoch_start_time = time.time()
+        losses = AverageMeter(['loss'])
+        num_iter = 0
+        n_batches = len(train_dataloader)
+
+        for idx, (taxonomy_ids, model_ids, data) in enumerate(train_dataloader):
+            points = data[0].cuda()
+            sem = data[1].cuda()
+            # data 顺序：(pts, sem, [inst, offset], [boundary])
+            cursor = 2
+            inst = offset = boundary = None
+            if need_inst:
+                inst = data[cursor].cuda()
+                offset = data[cursor + 1].cuda()
+                cursor += 2
+            if need_boundary:
+                boundary = data[cursor].cuda()
+                cursor += 1
+
+            ret = base_model(points)
+            sem_logits = ret[0]
+            # 返回顺序：logits, mat_logits, [inst], [boundary]
+            inst_pred = ret[2] if need_inst else None
+            boundary_pred = ret[2 + (1 if need_inst else 0)] if need_boundary else None
+
+            loss = sem_w * base_model.module.get_loss(sem_logits, sem)
+            if use_offset:
+                loss = loss + offset_w * base_model.module.get_offset_loss(inst_pred, inst, offset)
+            if use_boundary:
+                loss = loss + boundary_w * base_model.module.get_boundary_loss(boundary_pred, boundary)
+
+            loss.backward()
+            num_iter += 1
+            if num_iter == config.step_per_update:
+                if config.get('grad_norm_clip') is not None:
+                    torch.nn.utils.clip_grad_norm_(base_model.parameters(), config.grad_norm_clip, norm_type=2)
+                num_iter = 0
+                optimizer.step()
+                base_model.zero_grad()
+
+            losses.update([loss.item()])
+
+            if train_writer is not None:
+                n_itr = epoch * n_batches + idx
+                train_writer.add_scalar('Loss/Batch/Loss', loss.item(), n_itr)
+                train_writer.add_scalar('Loss/Batch/LR', optimizer.param_groups[0]['lr'], n_itr)
+
+        if isinstance(scheduler, list):
+            for item in scheduler:
+                item.step(epoch)
+        else:
+            scheduler.step(epoch)
+
+        print_log('[Training] EPOCH: %d  Loss = %.4f  lr = %.6f' %
+                  (epoch, losses.avg(0), optimizer.param_groups[0]['lr']), logger=logger)
+
+        if epoch % args.val_freq == 0 and epoch != 0:
+            metrics = validate(base_model, val_dataloader, num_classes, epoch, val_writer, args, logger=logger)
+            print_log('[Validation] EPOCH: %d  mIoU = %.4f  OA = %.4f' % (epoch, metrics.miou, metrics.oa),
+                      logger=logger)
+            if metrics.better_than(best_metrics):
+                best_metrics = metrics
+                builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-best', args,
+                                        logger=logger)
+
+        builder.save_checkpoint(base_model, optimizer, epoch, None, best_metrics, 'ckpt-last', args, logger=logger)
+
+    if train_writer is not None:
+        train_writer.close()
+    if val_writer is not None:
+        val_writer.close()
+
+    print_log('训练结束，best mIoU = %.4f, best OA = %.4f' % (best_metrics.miou, best_metrics.oa), logger=logger)
