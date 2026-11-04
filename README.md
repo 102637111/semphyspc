@@ -104,6 +104,8 @@ ros2 launch semphyspc nav2_offline_sim.launch.py  # 离线仿真
 | 3D 语义分割（12 类） | `experiments/seg_16k_ng6144_g050_merged/cfgs/merged_pretrain_ft/20260927-070312/ckpt-best.pth` | 142 MB | mIoU 0.6132 |
 | 2D 目标检测 | `experiments/s3_rtdetr_finetune/best.pt` | 165 MB | 微调 RT-DETR |
 
+> 权重文件体积超过 GitHub 100 MB 上限，未纳入仓库 git 历史。12 类分割 checkpoint 已作为 `semphyspc_12class_merged_ckpt-best.pth` 上传至 [v1.0.0 release](https://github.com/102637111/semphyspc/releases/tag/v1.0.0)（MD5 `b493e1ee62807db48e320c05b87558e4`）。RT-DETR 检测权重未随仓库分发，可向作者索取。
+
 ## 开发日志
 
 完整实验记录见 [`experiments/all_experiment_logs.md`](experiments/all_experiment_logs.md)。
